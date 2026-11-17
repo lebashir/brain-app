@@ -681,7 +681,7 @@ document.addEventListener("click", e => {
   if (act === "applyread" && proposal) { Object.assign(r, { w: proposal.w, d: proposal.d, h: proposal.h, openings: proposal.openings }); proposal = null; S.example = false; rebuild(); }
   if (act === "dismissread") proposal = null;
   if (act === "clearuploads") { const m = M(); m.photos = []; m.underlay = null; paintBase = ""; api("clear", { room: r.id }).catch(() => {}); }
-  if (act === "savekey") return run("paint", async () => { await api("key", { key: $("#gkey").value }); hasKey = true; });
+  if (act === "savekey") { const key = $("#gkey").value.trim(); return run("paint", async () => { await api("key", { key }); hasKey = true; }); }
   if (act === "paint") { const m = M(), photo = m.photos.some(p => p.name === paintBase) ? paintBase : "";
     return run("paint", async () => { const res = await job("render", { room: r.id, plan: await planPng(), brief: paintBrief(), photo }); m.renders.push({ name: res.name, url: fileUrl(r.id, res.name) }); }); }
   if (act === "find") { const { list } = shopRows(), p = PAL[S.shared.palette];
