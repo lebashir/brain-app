@@ -109,6 +109,13 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .links a { color: var(--accent); text-underline-offset: 3px; }
 .sum { display: flex; flex-wrap: wrap; gap: 8px 28px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .sum div { display: flex; flex-direction: column; } .sum b { font-family: var(--mono); font-size: 17px; font-weight: 500; }
+.finds { grid-column: 1 / -1; list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.finds li { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.finds a { color: var(--accent); font-weight: 500; text-underline-offset: 3px; }
+.renders { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.renders img { width: 100%; border-radius: 8px; border: 1px solid var(--line); display: block; }
+.err { color: var(--bad); }
+.btn:disabled { opacity: 0.6; cursor: default; }
 ul.tips { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; max-width: 65ch; }
 
 @media (max-width: 860px) {
@@ -140,6 +147,7 @@ ul.tips { margin: 0; padding-left: 18px; display: flex; flex-direction: column; 
       </div>
       <div id="plan"></div>
       <ul class="issues" id="issues"></ul>
+      <div class="group" id="renderbox"></div>
     </section>
   </div>
 </div>
@@ -195,7 +203,7 @@ const STORES = [
 /* ---------- state ---------- */
 function newRoom(type, name) {
   const living = type === "living";
-  return { name, type, w: living ? 620 : 420, d: living ? 400 : 360, h: 270,
+  return { id: uid(), name, type, w: living ? 620 : 420, d: living ? 400 : 360, h: 270,
     openings: living
       ? [{ kind: "door", wall: "W", pos: 30, width: 90 }, { kind: "window", wall: "N", pos: 380, width: 180 }, { kind: "balcony", wall: "E", pos: 110, width: 180 }]
       : [{ kind: "door", wall: "S", pos: 20, width: 85 }, { kind: "window", wall: "N", pos: 120, width: 160 }],
@@ -207,11 +215,39 @@ let S = { cur: 0, step: "room", view: "plan", example: true,
     wasBig: false, wasUncomfy: false, wasQuality: false, wasStorage: false, wasColor: false, h1: "", h2: "", doorW: "", liftD: "", liftH: "" },
   rooms: [newRoom("living", "Living / dining")] };
 try { const saved = JSON.parse(localStorage.getItem("roomfit1")); if (saved && saved.rooms && saved.rooms.length) S = saved; } catch (e) {}
-const media = {};            // per-room uploads, kept in memory only: {underlay, opacity, photos[]}
+const media = {};            // per-room images: {underlay, opacity, photos[{name,url}], renders[{name,url}]}
 let sel = null, opts = [];
+let API = false, proposal = null, paintBase = "", saveT;   // API: running inside the brain, so Claude and Gemini are available
+const busy = {}, err = {};
 const R = () => S.rooms[S.cur];
-const M = () => (media[S.cur] = media[S.cur] || { underlay: null, opacity: 0.5, photos: [] });
-function save() { try { localStorage.setItem("roomfit1", JSON.stringify(S)); } catch (e) {} }
+const MR = id => (media[id] = media[id] || { underlay: null, opacity: 0.5, photos: [], renders: [] });
+const M = () => MR(R().id);
+const fileUrl = (room, name) => `/api/roomfit/file/${room}/${name}`;
+async function api(path, body) {
+  const r = await fetch("/api/roomfit/" + path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-Brain": "1" }, body: JSON.stringify(body) });
+  const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j;
+}
+async function job(kind, body) {
+  const { id } = await api(kind, body);
+  for (;;) { await new Promise(r => setTimeout(r, 2500)); const j = await api("job?id=" + id);
+    if (j.status === "done") return j.result; if (j.status === "error") throw new Error(j.error); }
+}
+async function run(kind, fn) { busy[kind] = true; err[kind] = ""; renderAll(); try { await fn(); } catch (e) { err[kind] = e.message; } busy[kind] = false; renderAll(); }
+function save() {
+  try { localStorage.setItem("roomfit1", JSON.stringify(S)); } catch (e) {}
+  if (API) { clearTimeout(saveT); saveT = setTimeout(() => api("state", { state: S }).catch(() => {}), 600); }
+}
+async function loadMedia() {
+  for (const r of S.rooms) { const m = MR(r.id), { files } = await api("uploads?room=" + r.id);
+    const of = k => files.filter(f => f.startsWith(k + "-")).map(name => ({ name, url: fileUrl(r.id, name) }));
+    m.photos = of("photo"); m.renders = of("render"); const pl = of("plan").pop(); m.underlay = pl ? pl.url : null; }
+}
+const shrink = file => new Promise((res, rej) => { const img = new Image(), u = URL.createObjectURL(file);
+  img.onload = () => { const k = Math.min(1, 1600 / Math.max(img.width, img.height)), c = document.createElement("canvas");
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    const x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); x.drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(u); res(c.toDataURL("image/jpeg", 0.85)); };
+  img.onerror = () => rej(new Error("Could not read that image.")); img.src = u; });
 
 /* ---------- geometry ---------- */
 const fp = it => ({ x: it.x, y: it.y, w: it.rot % 2 ? it.bd : it.bw, d: it.rot % 2 ? it.bw : it.bd });
@@ -407,14 +443,14 @@ function openingSvg(o, room, p) {
   if (o.kind === "balcony") s += `<line x1="${lp}" y1="-9" x2="${lp + w * 0.55}" y2="-9" stroke="${INK}" stroke-width="2"/><line x1="${lp + w * 0.45}" y1="-4" x2="${lp + w}" y2="-4" stroke="${INK}" stroke-width="2"/>`;
   return `<g transform="${tf}">${s}</g>`;
 }
-function planSvg() {
+function planSvg(bare) {
   const r = R(), p = PAL[S.shared.palette], m = M(), pad = 62;
   let s = `<svg viewBox="${-pad} ${-pad} ${r.w + pad * 2} ${r.d + pad * 2}" role="img" aria-label="Floor plan of ${esc(r.name)}, ${r.w} by ${r.d} centimetres">`;
   s += `<rect x="-7" y="-7" width="${r.w + 14}" height="${r.d + 14}" fill="${p.floor}" stroke="${INK}" stroke-width="14"/>`;
   s += `<rect x="0" y="0" width="${r.w}" height="${r.d}" fill="${p.floor}"/>`;
   for (let x = 100; x < r.w; x += 100) s += `<line x1="${x}" y1="0" x2="${x}" y2="${r.d}" stroke="${INK}" stroke-opacity=".08"/>`;
   for (let y = 100; y < r.d; y += 100) s += `<line x1="0" y1="${y}" x2="${r.w}" y2="${y}" stroke="${INK}" stroke-opacity=".08"/>`;
-  if (m.underlay) s += `<image href="${m.underlay}" x="0" y="0" width="${r.w}" height="${r.d}" preserveAspectRatio="none" opacity="${m.opacity}"/>`;
+  if (m.underlay && !bare) s += `<image href="${m.underlay}" x="0" y="0" width="${r.w}" height="${r.d}" preserveAspectRatio="none" opacity="${m.opacity}"/>`;
   s += r.openings.map(o => openingSvg(o, r, p)).join("");
   const order = it => it.type === "rug" ? 0 : it.type === "chair" ? 1 : 2;
   for (const it of [...r.items].sort((a, b) => order(a) - order(b))) {
@@ -423,12 +459,26 @@ function planSvg() {
   }
   for (const it of r.items) { const f = fp(it);
     if (T[it.type].major && f.w >= 90) s += `<text x="${f.x + f.w / 2}" y="${f.y + f.d / 2 + 5}" font-size="13" text-anchor="middle" pointer-events="none" fill-opacity=".8">${esc(T[it.type].n)}</text>`;
-    if (it.id === sel) s += `<rect x="${f.x - 4}" y="${f.y - 4}" width="${f.w + 8}" height="${f.d + 8}" fill="none" stroke="#0d6a69" stroke-width="3" stroke-dasharray="9 6" pointer-events="none"/>`
+    if (it.id === sel && !bare) s += `<rect x="${f.x - 4}" y="${f.y - 4}" width="${f.w + 8}" height="${f.d + 8}" fill="none" stroke="#0d6a69" stroke-width="3" stroke-dasharray="9 6" pointer-events="none"/>`
       + `<text x="${f.x + f.w / 2}" y="${f.y - 10}" font-size="14" font-weight="500" text-anchor="middle" pointer-events="none">${f.w} × ${f.d}</text>`; }
   s += `<text x="${r.w / 2}" y="${-30}" font-size="17" text-anchor="middle">${r.w} cm</text>`;
   s += `<text transform="translate(${-30} ${r.d / 2}) rotate(-90)" font-size="17" text-anchor="middle">${r.d} cm</text>`;
   s += `<g transform="translate(0 ${r.d + 34})"><line x1="0" y1="0" x2="100" y2="0" stroke="${INK}" stroke-width="3"/><line x1="0" y1="-6" x2="0" y2="6" stroke="${INK}" stroke-width="2"/><line x1="100" y1="-6" x2="100" y2="6" stroke="${INK}" stroke-width="2"/><text x="110" y="5" font-size="14">1 m</text></g>`;
   return s + "</svg>";
+}
+function planPng() {
+  const r = R(), W = 1400, H = Math.round(W * (r.d + 124) / (r.w + 124));
+  const svg = planSvg(true).replace("<svg ", `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" font-family="monospace" `);
+  return new Promise((res, rej) => { const img = new Image();
+    img.onload = () => { const c = document.createElement("canvas"); c.width = W; c.height = H; const x = c.getContext("2d");
+      x.fillStyle = "#fbfbf8"; x.fillRect(0, 0, W, H); x.drawImage(img, 0, 0, W, H); res(c.toDataURL("image/png")); };
+    img.onerror = () => rej(new Error("Could not draw the plan.")); img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg); });
+}
+function paintBrief() {
+  const r = R(), p = PAL[S.shared.palette];
+  return `${STYLES[S.shared.style]} ${r.type === "living" ? "living and dining room" : "bedroom"}, ${r.w / 100} m wide and ${r.d / 100} m deep, ceiling ${r.h / 100} m. `
+    + `Colour scheme ${p.name}: ${p.color} upholstery, wood furniture, light walls. Furniture: `
+    + r.items.filter(i => i.type !== "chaise").map(i => `${nm(i)} ${i.bw} x ${i.bd} cm`).join("; ") + ".";
 }
 function isoSvg() {
   const r = R(), p = PAL[S.shared.palette], H = r.h, C = 0.866;
@@ -454,7 +504,7 @@ function shopRows() {
   const r = R(), p = PAL[S.shared.palette], rows = new Map();
   for (const it of r.items) { if (it.type === "chaise" || it.desk) continue;
     const key = [it.type, it.bw, it.bd, !!it.own, !!it.sect].join("|");
-    if (!rows.has(key)) rows.set(key, { it, ids: [], n: 0 }); const g = rows.get(key); g.n++; g.ids.push(it.id); }
+    if (!rows.has(key)) rows.set(key, { it, ids: [], n: 0, key }); const g = rows.get(key); g.n++; g.ids.push(it.id); }
   const list = [...rows.values()].map(g => { const it = g.it, t = T[it.type]; let name = t.n, q = t.q, wt = t.wt;
     if (it.type === "sofa") { const seats = it.bw < 175 ? 2 : it.bw < 240 ? 3 : 4; name = it.sect ? "Corner sofa (L-shaped)" : seats + "-seater sofa"; q = (it.sect ? "corner sofa l shaped " : seats + " seater sofa ") + p.color; if (it.sect) wt = 28; }
     if (it.type === "armchair" || it.type === "chair") q += " " + p.color;
@@ -463,7 +513,7 @@ function shopRows() {
     if (it.type === "rug") q = `rug ${Math.round(Math.min(it.bw, it.bd) / 10) * 10}x${Math.round(Math.max(it.bw, it.bd) / 10) * 10}`;
     return Object.assign(g, { name, q, wt: wt * g.n, pr: t.pr, size: it.type === "bed" ? "" : `up to ${it.bw} × ${it.bd} cm` + (it.sect ? ", chaise 165 cm deep" : "") }); });
   const bed = r.items.find(i => i.type === "bed");
-  if (bed && !bed.own) { const sz = { single: "90x200", queen: "160x200", king: "180x200" }[bed.size] || "160x200"; list.push({ it: { type: "mattress" }, ids: [], n: 1, name: "Mattress " + sz.replace("x", " × "), q: "mattress " + sz, wt: 18, pr: 1, size: "try in a showroom before buying" }); }
+  if (bed && !bed.own) { const sz = { single: "90x200", queen: "160x200", king: "180x200" }[bed.size] || "160x200"; list.push({ it: { type: "mattress" }, key: "mattress", ids: [], n: 1, name: "Mattress " + sz.replace("x", " × "), q: "mattress " + sz, wt: 18, pr: 1, size: "try in a showroom before buying" }); }
   const budget = +r.brief.budget || 0, reserve = budget * 0.1, tot = list.filter(g => !g.it.own).reduce((a, g) => a + g.wt, 0) || 1;
   for (const g of list) g.price = g.it.own ? 0 : Math.round((budget - reserve) * g.wt / tot / 50) * 50;
   list.sort((a, b) => a.pr - b.pr || b.wt - a.wt);
@@ -512,8 +562,14 @@ function panelRoom() {
     <label for="up-plan">Floor plan drawing, shown under the plan to trace<input id="up-plan" type="file" accept="image/*" data-up="plan"></label>
     ${m.underlay ? `<label for="up-op">Drawing opacity<input id="up-op" type="range" min="0.1" max="1" step="0.05" value="${m.opacity}" data-up="opacity"></label>` : ""}
     <label for="up-photos">Photos of the room, kept for reference<input id="up-photos" type="file" accept="image/*" multiple data-up="photos"></label>
-    ${m.photos.length ? `<div class="thumbs">${m.photos.map(u => `<img src="${u}" alt="Room photo">`).join("")}</div>` : ""}
-    <p class="small muted">Uploads stay in this browser tab. Reading sizes from a photo automatically is not built yet.</p></div>
+    ${m.photos.length ? `<div class="thumbs">${m.photos.map(u => `<img src="${u.url}" alt="Room photo">`).join("")}</div>` : ""}
+    ${API ? `<div class="row"><button class="btn" type="button" data-act="read" ${busy.read || !(m.photos.length || m.underlay) ? "disabled" : ""}>${busy.read ? "Claude is looking, about a minute…" : "Read the room from these"}</button>
+      ${m.photos.length || m.underlay ? `<button class="btn ghost" type="button" data-act="clearuploads">Remove uploads</button>` : ""}</div>
+      ${err.read ? `<p class="small err">${esc(err.read)}</p>` : ""}
+      ${proposal && proposal.room === r.id ? `<div class="note"><b>Claude's estimate (${proposal.confidence} confidence):</b> <span class="num">${proposal.w} × ${proposal.d} cm</span>, ceiling ${proposal.h} cm, ${proposal.openings.length} doors and windows. ${esc(proposal.notes)} Check it against a tape measure.
+        <div class="row" style="margin-top:8px"><button class="btn primary" type="button" data-act="applyread">Use these sizes</button><button class="btn ghost" type="button" data-act="dismissread">Ignore</button></div></div>` : ""}
+      <p class="small muted">Images are saved on this PC. "Read the room" sends them to Claude.</p>`
+    : `<p class="small muted">Uploads stay in this browser tab. Reading sizes from photos works when Roomfit runs inside the brain on your PC.</p>`}</div>
   <div><button class="btn primary" type="button" data-step="brief">Next: your brief</button></div>`;
 }
 function panelBrief() {
@@ -551,15 +607,21 @@ function panelLayout() {
   <div class="row"><button class="btn ghost" type="button" data-act="reset">Reset to suggested layout</button><button class="btn primary" type="button" data-step="shop">Next: shopping list</button></div>`;
 }
 function panelShop() {
-  const { list, budget, reserve } = shopRows(), r = R(), spend = list.reduce((a, g) => a + g.price, 0);
+  const { list, budget, reserve } = shopRows(), r = R(), spend = list.reduce((a, g) => a + g.price, 0), finds = (r.finds && r.finds.found) || {};
   return `<div class="group"><h2>Shopping list for ${esc(r.name)}</h2>
     <p class="muted" style="max-width:65ch">Sizes come from the plan, so anything at or under them fits. Prices are a budget split, not quotes. Links open a search at each UAE store; compare the live prices there.</p></div>
   <div class="sum"><div><span class="small muted">Budget</span><b>${aed(budget)}</b></div><div><span class="small muted">Furniture</span><b>${aed(spend)}</b></div>
     <div><span class="small muted">Kept for curtains, lighting, art</span><b>${aed(reserve)}</b></div></div>
+  ${API ? `<div class="row" style="align-items:center"><button class="btn primary" type="button" data-act="find" ${busy.find ? "disabled" : ""}>${busy.find ? "Claude is searching the stores, a few minutes…" : "Find real products"}</button>
+    ${r.finds ? `<span class="small muted">Prices checked ${esc(r.finds.at)}. Confirm on the store page before buying.</span>` : ""}</div>
+    ${err.find ? `<p class="small err">${esc(err.find)}</p>` : ""}` : ""}
   <div class="shop">${list.map(g => { const q = encodeURIComponent(g.q).replace(/%20/g, "+");
     return `<div class="item-row ${g.it.own ? "own" : ""}"><div><span class="name">${esc(g.name)}${g.n > 1 ? " × " + g.n : ""}</span> <span class="small muted num">${g.size}</span></div>
       <div class="price">${g.it.own ? "already owned" : "up to " + aed(g.price)}</div>
-      ${g.it.own ? "" : `<div class="links">${STORES.map(([n, u]) => `<a href="${u(q)}" target="_blank" rel="noopener">${n}</a>`).join("")}</div>`}</div>`; }).join("")}</div>
+      ${g.it.own ? "" : `<div class="links">${STORES.map(([n, u]) => `<a href="${u(q)}" target="_blank" rel="noopener">${n}</a>`).join("")}</div>`}
+      ${!g.it.own && finds[g.key] ? `<ul class="finds">${finds[g.key].map(p => `<li><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.title)}</a>
+        <span class="small muted">${esc(p.store)}${p.price ? " · " + aed(p.price) + (p.price > g.price / g.n ? " (over budget)" : "") : " · price not confirmed"}${p.w && p.d ? ` · ${p.w} × ${p.d}${p.h ? " × " + p.h : ""} cm` : " · size not confirmed"}</span>
+        ${p.why ? `<br><span class="small">${esc(p.why)}</span>` : ""}</li>`).join("")}</ul>` : ""}</div>`; }).join("")}</div>
   <div class="group"><h3>Buy in this order</h3><p class="small muted" style="max-width:65ch">The list is sorted so the large anchor pieces come first. Buy those, live with them for a week, then choose the rug, lamps and small tables to suit.</p></div>
   <div class="group"><h3>For your home</h3><ul class="tips">${tips().map(t => `<li>${esc(t)}</li>`).join("")}</ul></div>
   <div class="row"><button class="btn" type="button" data-act="copy">Copy list as text</button><button class="btn ghost" type="button" data-step="layout">Back to layout</button></div>
@@ -577,6 +639,17 @@ function renderStage() {
   const iss = check(r.items, r);
   $("#issues").innerHTML = iss.length ? iss.sort((a, b) => (a.level === "bad" ? 0 : 1) - (b.level === "bad" ? 0 : 1)).map(i => `<li class="${i.level}">${esc(i.text)}</li>`).join("")
     : `<li class="ok">Everything fits: no overlaps, doors clear, walkways of 60 cm or more.</li>`;
+  renderBox();
+}
+function renderBox() {
+  const m = M(), el = $("#renderbox");
+  if (!API) { el.innerHTML = ""; return; }
+  el.innerHTML = `<h3>Pictures of this layout</h3>
+    <div class="row"><label for="renderbase">Based on<select id="renderbase"><option value="">The plan only</option>${m.photos.map((p, i) => `<option value="${p.name}" ${paintBase === p.name ? "selected" : ""}>Photo ${i + 1} of the real room</option>`).join("")}</select></label>
+      <button class="btn primary" type="button" data-act="paint" style="align-self:flex-end" ${busy.paint ? "disabled" : ""}>${busy.paint ? "Gemini is painting, about a minute…" : "Paint this layout"}</button></div>
+    ${err.paint ? `<p class="small err">${esc(err.paint)}</p>` : ""}
+    <p class="small muted">Sends the plan and the chosen photo to Google Gemini. Pictures show the mood; only the plan is to scale.</p>
+    <div class="renders">${m.renders.slice().reverse().map(u => `<a href="${u.url}" target="_blank" rel="noopener"><img src="${u.url}" alt="Picture of the layout"></a>`).join("")}</div>`;
 }
 function renderChrome() {
   $("#roomsel").innerHTML = S.rooms.map((r, i) => `<option value="${i}" ${i === S.cur ? "selected" : ""}>${esc(r.name)}</option>`).join("");
@@ -595,6 +668,15 @@ document.addEventListener("click", e => {
   if (t.dataset.view) { S.view = t.dataset.view; return renderAll(); }
   if (t.dataset.opt) { r.opt = +t.dataset.opt; r.items = JSON.parse(JSON.stringify(opts[r.opt].items)); sel = null; return renderAll(); }
   const act = t.dataset.act, it = r.items.find(i => i.id === sel);
+  if (act === "read") return run("read", async () => { proposal = Object.assign(await job("read", { room: r.id }), { room: r.id }); });
+  if (act === "applyread" && proposal) { Object.assign(r, { w: proposal.w, d: proposal.d, h: proposal.h, openings: proposal.openings }); proposal = null; S.example = false; rebuild(); }
+  if (act === "dismissread") proposal = null;
+  if (act === "clearuploads") { const m = M(); m.photos = []; m.underlay = null; paintBase = ""; api("clear", { room: r.id }).catch(() => {}); }
+  if (act === "paint") { const m = M(), photo = m.photos.some(p => p.name === paintBase) ? paintBase : "";
+    return run("paint", async () => { const res = await job("render", { room: r.id, plan: await planPng(), brief: paintBrief(), photo }); m.renders.push({ name: res.name, url: fileUrl(r.id, res.name) }); }); }
+  if (act === "find") { const { list } = shopRows(), p = PAL[S.shared.palette];
+    const pieces = list.filter(g => !g.it.own).map(g => ({ key: g.key, what: g.name + (g.n > 1 ? " x" + g.n : ""), w: g.it.bw || 0, d: g.it.bd || 0, budget: Math.round(g.price / g.n) }));
+    return run("find", async () => { r.finds = await job("find", { pieces, style: STYLES[S.shared.style], colours: p.name + ", " + p.color }); }); }
   if (act === "addopening") { r.openings.push({ kind: "window", wall: "N", pos: 50, width: 120 }); S.example = false; rebuild(); }
   if (act === "delopening") { r.openings.splice(+t.dataset.i, 1); S.example = false; rebuild(); }
   if (act === "reset") rebuild();
@@ -628,8 +710,12 @@ document.addEventListener("input", e => {
 document.addEventListener("change", e => {
   const el = e.target;
   if (el.id === "roomsel") { S.cur = +el.value; buildOptions(); sel = null; return renderAll(); }
-  if (el.dataset.up === "plan" || el.dataset.up === "photos") { const m = M();
-    for (const f of el.files) { const fr = new FileReader(); fr.onload = () => { if (el.dataset.up === "plan") m.underlay = fr.result; else m.photos.push(fr.result); renderPanel(); renderStage(); }; fr.readAsDataURL(f); } }
+  if (el.id === "renderbase") paintBase = el.value;
+  if (el.dataset.up === "plan" || el.dataset.up === "photos") { const m = M(), r = R(), kind = el.dataset.up === "plan" ? "plan" : "photo";
+    for (const f of el.files) shrink(f).then(async data => { let item = { name: "", url: data };
+      if (API) { const { name } = await api("upload", { room: r.id, kind, data }); item = { name, url: fileUrl(r.id, name) }; }
+      if (kind === "plan") m.underlay = item.url; else m.photos.push(item);
+    }).catch(e => { err.read = e.message; }).finally(() => { renderPanel(); renderStage(); }); }
 });
 $("#addroom").addEventListener("click", () => { const n = S.rooms.filter(r => r.type === "bedroom").length;
   S.rooms.push(newRoom("bedroom", n ? "Bedroom " + (n + 1) : "Bedroom")); S.cur = S.rooms.length - 1; S.step = "room"; rebuild(); renderAll(); });
@@ -658,9 +744,16 @@ const endDrag = () => { if (!drag) return; drag = null; if (S.step !== "layout" 
 plan.addEventListener("pointerup", endDrag); plan.addEventListener("pointercancel", endDrag);
 
 /* boot */
-buildOptions();
-if (!R().items.length) rebuild();
-renderAll();
+async function boot() {
+  try { const { state } = await api("state"); API = true; if (state && state.rooms && state.rooms.length) S = state; } catch (e) {}
+  for (const r of S.rooms) r.id = r.id || uid();
+  S.cur = clamp(S.cur | 0, 0, S.rooms.length - 1);
+  if (API) try { await loadMedia(); } catch (e) {}
+  buildOptions();
+  if (!R().items.length) rebuild();
+  renderAll();
+}
+boot();
 </script>
 </body>
 </html>
