@@ -180,6 +180,7 @@ const T = {
   rug:        { n: "Rug", h: 1, wt: 6, pr: 3, q: "rug" },
   table:      { n: "Dining table", h: 75, wt: 12, pr: 1, major: 1, q: "dining table" },
   chair:      { n: "Dining chair", h: 85, wt: 2, pr: 1, q: "dining chair" },
+  bench:      { n: "Dining bench", h: 45, wt: 3, pr: 1, q: "dining bench" },
   sideboard:  { n: "Sideboard", h: 80, wt: 8, pr: 2, major: 1, rigid: 1, q: "sideboard" },
   desk:       { n: "Desk", h: 75, wt: 5, pr: 2, major: 1, q: "desk" },
   bookcase:   { n: "Bookcase", h: 190, wt: 5, pr: 2, major: 1, tall: 1, q: "bookcase" },
@@ -258,7 +259,7 @@ function gap(a, b) {
 }
 const hit = (a, b, m = 2) => Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > m && Math.min(a.y + a.d, b.y + b.d) - Math.max(a.y, b.y) > m;
 function zones(room) {
-  return room.openings.map(o => {
+  return room.openings.filter(o => o.kind !== "open").map(o => {
     const depth = o.kind === "door" ? o.width : o.kind === "balcony" ? 80 : 25;
     const z = o.wall === "N" ? { x: o.pos, y: 0, w: o.width, d: depth } : o.wall === "S" ? { x: o.pos, y: room.d - depth, w: o.width, d: depth }
       : o.wall === "W" ? { x: 0, y: o.pos, w: depth, d: o.width } : { x: room.w - depth, y: o.pos, w: depth, d: o.width };
@@ -360,6 +361,7 @@ function buildOptions() {
   }
   cands.sort((a, b2) => a.score - b2.score);
   opts = []; for (const c of cands) if (!opts.some(o => o.label === c.label) && opts.length < 3) opts.push(c);
+  if (r.custom) opts.unshift({ items: r.custom, label: r.customLabel || "Designed for this room" });
 }
 function rebuild() { buildOptions(); const r = R(); r.opt = 0; r.items = JSON.parse(JSON.stringify(opts[0].items)); sel = null; }
 
@@ -437,6 +439,7 @@ function openingSvg(o, room, p) {
   const len = o.wall === "N" || o.wall === "S" ? room.w : room.d;
   const lp = o.wall === "S" || o.wall === "W" ? len - o.pos - o.width : o.pos, w = o.width;
   const tf = { N: "", E: `translate(${room.w} 0) rotate(90)`, S: `translate(${room.w} ${room.d}) rotate(180)`, W: `translate(0 ${room.d}) rotate(270)` }[o.wall];
+  if (o.kind === "open") return `<g transform="${tf}"><rect x="${lp}" y="-14" width="${w}" height="15" fill="${p.floor}"/><line x1="${lp}" y1="-7" x2="${lp + w}" y2="-7" stroke="${INK}" stroke-opacity=".5" stroke-width="1.5" stroke-dasharray="8 7"/></g>`;
   let s = `<rect x="${lp}" y="-13" width="${w}" height="14" fill="${o.kind === "door" ? "#fbfbf8" : "#cfe3ea"}" stroke="${INK}" stroke-width="1.5"/>`;
   if (o.kind === "door") s += `<path d="M${lp} 0 L${lp} ${w} A${w} ${w} 0 0 0 ${lp + w} 0" fill="${INK}" fill-opacity=".05" stroke="${INK}" stroke-width="1.5" stroke-dasharray="6 5"/><line x1="${lp}" y1="0" x2="${lp}" y2="${w}" stroke="${INK}" stroke-width="3"/>`;
   if (o.kind === "window") s += `<line x1="${lp}" y1="-6" x2="${lp + w}" y2="-6" stroke="${INK}" stroke-width="1.5"/>`;
@@ -488,7 +491,7 @@ function isoSvg() {
   let s = `<svg viewBox="${vb.join(" ")}" role="img" aria-label="3D massing view of ${esc(r.name)}">`;
   s += poly([[0, 0, 0], [r.w, 0, 0], [r.w, 0, H], [0, 0, H]], p.wall) + poly([[0, 0, 0], [0, r.d, 0], [0, r.d, H], [0, 0, H]], shade(p.wall, 0.93));
   s += poly([[0, 0, 0], [r.w, 0, 0], [r.w, r.d, 0], [0, r.d, 0]], p.floor);
-  for (const o of r.openings) { const z0 = o.kind === "window" ? 90 : 0, z1 = 215, fill = o.kind === "door" ? shade(p.wood, 1.1) : "#cfe3ea";
+  for (const o of r.openings) { if (o.kind === "open") continue; const z0 = o.kind === "window" ? 90 : 0, z1 = 215, fill = o.kind === "door" ? shade(p.wood, 1.1) : "#cfe3ea";
     if (o.wall === "N") s += poly([[o.pos, 0, z0], [o.pos + o.width, 0, z0], [o.pos + o.width, 0, z1], [o.pos, 0, z1]], fill);
     if (o.wall === "W") s += poly([[0, o.pos, z0], [0, o.pos + o.width, z0], [0, o.pos + o.width, z1], [0, o.pos, z1]], fill); }
   const col = it => ["sofa", "chaise", "armchair", "chair"].includes(it.type) ? p.uph : it.type === "rug" ? p.rug : it.type === "lamp" ? p.accent : it.type === "plant" ? "#6f8f62" : it.type === "bed" ? "#f1ede4" : p.wood;
@@ -521,7 +524,7 @@ function shopRows() {
 }
 function tips() {
   const s = S.shared, r = R(), out = [];
-  for (const o of r.openings) if (o.kind !== "door") out.push(`Curtains for the ${o.width} cm ${o.kind === "balcony" ? "balcony door" : "window"}: a rod of about ${o.width + 40} cm and two panels of ${o.width} cm each, ${r.h - 5} cm long so they hang from the ceiling line.`);
+  for (const o of r.openings) if (o.kind === "window" || o.kind === "balcony") out.push(`Curtains for the ${o.width} cm ${o.kind === "balcony" ? "balcony door" : "window"}: a rod of about ${o.width + 40} cm and two panels of ${o.width} cm each, ${r.h - 5} cm long so they hang from the ceiling line.`);
   const hs = [+s.h1, +s.h2].filter(Boolean);
   if (hs.length) { const lo = Math.min(...hs), hi = Math.max(...hs);
     out.push(hi - lo >= 15 ? `You are ${lo} and ${hi} cm tall. Look for a sofa seat depth of 55 to 58 cm with loose back cushions, so the shorter person can sit upright and the taller one can lounge.`
@@ -542,7 +545,7 @@ const pick = (label, k, v, options, num) => `<label for="f-${k}">${label}<select
 
 function panelRoom() {
   const r = R(), s = S.shared, m = M();
-  return `${S.example ? `<p class="note">This is an example room. Replace the numbers with your own; the plan redraws as you type.</p>` : ""}
+  return `${r.note ? `<p class="note">${esc(r.note)}</p>` : ""}${S.example ? `<p class="note">This is an example room. Replace the numbers with your own; the plan redraws as you type.</p>` : ""}
   <div class="group"><h3>Room</h3>
     <div class="row"><label for="f-r.name">Name<input id="f-r.name" type="text" data-k="r.name" value="${esc(r.name)}"></label>
       ${pick("Type", "r.type", r.type, [["living", "Living / dining"], ["bedroom", "Bedroom"]])}</div>
@@ -550,7 +553,7 @@ function panelRoom() {
     <p class="small muted">Measure wall to wall at floor level. Rectangular rooms only for now.</p></div>
   <div class="group"><h3>Doors and windows</h3>
     ${r.openings.map((o, i) => `<div class="opening">
-      ${pick("Kind", `o.${i}.kind`, o.kind, [["door", "Door"], ["window", "Window"], ["balcony", "Balcony door"]])}
+      ${pick("Kind", `o.${i}.kind`, o.kind, [["door", "Door"], ["window", "Window"], ["balcony", "Balcony door"], ["open", "Open to next room"]])}
       ${pick("Wall", `o.${i}.wall`, o.wall, [["N", "Top"], ["E", "Right"], ["S", "Bottom"], ["W", "Left"]])}
       ${fld(o.wall === "N" || o.wall === "S" ? "From left" : "From top", `o.${i}.pos`, o.pos, 'min="0" step="5"')}${fld("Width", `o.${i}.width`, o.width, 'min="40" step="5"')}
       <button class="btn x" type="button" data-act="delopening" data-i="${i}" aria-label="Remove opening">Remove</button></div>`).join("")}
@@ -614,7 +617,7 @@ function panelShop() {
     <div><span class="small muted">Kept for curtains, lighting, art</span><b>${aed(reserve)}</b></div></div>
   ${API ? `<div class="row" style="align-items:center"><button class="btn primary" type="button" data-act="find" ${busy.find ? "disabled" : ""}>${busy.find ? "Claude is searching the stores, a few minutes…" : "Find real products"}</button>
     ${r.finds ? `<span class="small muted">Prices checked ${esc(r.finds.at)}. Confirm on the store page before buying.</span>` : ""}</div>
-    ${err.find ? `<p class="small err">${esc(err.find)}</p>` : ""}` : ""}
+    ${err.find ? `<p class="small err">${esc(err.find)}</p>` : ""}` : r.finds ? `<p class="small muted">Products found ${esc(r.finds.at)}. ${esc(r.finds.note || "Confirm price and size on the store page before buying.")}</p>` : ""}
   <div class="shop">${list.map(g => { const q = encodeURIComponent(g.q).replace(/%20/g, "+");
     return `<div class="item-row ${g.it.own ? "own" : ""}"><div><span class="name">${esc(g.name)}${g.n > 1 ? " × " + g.n : ""}</span> <span class="small muted num">${g.size}</span></div>
       <div class="price">${g.it.own ? "already owned" : "up to " + aed(g.price)}</div>
@@ -680,7 +683,7 @@ document.addEventListener("click", e => {
   if (act === "addopening") { r.openings.push({ kind: "window", wall: "N", pos: 50, width: 120 }); S.example = false; rebuild(); }
   if (act === "delopening") { r.openings.splice(+t.dataset.i, 1); S.example = false; rebuild(); }
   if (act === "reset") rebuild();
-  if (act === "add") { const type = $("#addtype").value, dims = { sofa: [215, 95], armchair: [80, 85], tv: [180, 42], coffee: [110, 60], side: [45, 45], lamp: [35, 35], rug: [240, 170], table: [120, 80], chair: [45, 48], sideboard: [160, 45], desk: [120, 60], bookcase: [80, 35], bed: [165, 205], nightstand: [50, 40], wardrobe: [200, 60], dresser: [120, 50], plant: [40, 40] }[type];
+  if (act === "add") { const type = $("#addtype").value, dims = { sofa: [215, 95], armchair: [80, 85], tv: [180, 42], coffee: [110, 60], side: [45, 45], lamp: [35, 35], rug: [240, 170], table: [120, 80], chair: [45, 48], bench: [120, 40], sideboard: [160, 45], desk: [120, 60], bookcase: [80, 35], bed: [165, 205], nightstand: [50, 40], wardrobe: [200, 60], dresser: [120, 50], plant: [40, 40] }[type];
     const n = mk(type, dims[0], dims[1], 0, r5(r.w / 2 - dims[0] / 2), r5(r.d / 2 - dims[1] / 2)); r.items.push(n); sel = n.id; }
   if (it && act === "remove") { r.items = r.items.filter(i => i.id !== it.id && i.parent !== it.id); sel = null; }
   if (it && act === "rotate") { const f = fp(it), cx = f.x + f.w / 2, cy = f.y + f.d / 2;
@@ -745,6 +748,8 @@ plan.addEventListener("pointerup", endDrag); plan.addEventListener("pointercance
 
 /* boot */
 async function boot() {
+  const seed = window.ROOMFIT_SEED;   // a prepared set of rooms; replaces older saved work once
+  if (seed && S.seed !== seed.seed) S = JSON.parse(JSON.stringify(seed));
   try { const { state } = await api("state"); API = true; if (state && state.rooms && state.rooms.length) S = state; } catch (e) {}
   for (const r of S.rooms) r.id = r.id || uid();
   S.cur = clamp(S.cur | 0, 0, S.rooms.length - 1);
