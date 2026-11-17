@@ -218,7 +218,7 @@ let S = { cur: 0, step: "room", view: "plan", example: true,
 try { const saved = JSON.parse(localStorage.getItem("roomfit1")); if (saved && saved.rooms && saved.rooms.length) S = saved; } catch (e) {}
 const media = {};            // per-room images: {underlay, opacity, photos[{name,url}], renders[{name,url}]}
 let sel = null, opts = [];
-let API = false, proposal = null, paintBase = "", saveT;   // API: running inside the brain, so Claude and Gemini are available
+let API = false, hasKey = false, proposal = null, paintBase = "", saveT;   // API: running inside the brain, so Claude and Gemini are available
 const busy = {}, err = {};
 const R = () => S.rooms[S.cur];
 const MR = id => (media[id] = media[id] || { underlay: null, opacity: 0.5, photos: [], renders: [] });
@@ -647,6 +647,12 @@ function renderStage() {
 function renderBox() {
   const m = M(), el = $("#renderbox");
   if (!API) { el.innerHTML = ""; return; }
+  if (!hasKey) { el.innerHTML = `<h3>Pictures of this layout</h3>
+    <p class="small">Connect Google Gemini once to get pictures. <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--accent)">Open Google AI Studio</a>, sign in, press "Create API key", then paste it here.</p>
+    <div class="row"><label for="gkey">Gemini API key<input id="gkey" type="password" autocomplete="off" style="width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink)"></label>
+      <button class="btn primary" type="button" data-act="savekey" style="align-self:flex-end">Connect</button></div>
+    ${err.paint ? `<p class="small err">${esc(err.paint)}</p>` : ""}
+    <p class="small muted">The key is saved on this PC only, in the brain's secrets folder.</p>`; return; }
   el.innerHTML = `<h3>Pictures of this layout</h3>
     <div class="row"><label for="renderbase">Based on<select id="renderbase"><option value="">The plan only</option>${m.photos.map((p, i) => `<option value="${p.name}" ${paintBase === p.name ? "selected" : ""}>Photo ${i + 1} of the real room</option>`).join("")}</select></label>
       <button class="btn primary" type="button" data-act="paint" style="align-self:flex-end" ${busy.paint ? "disabled" : ""}>${busy.paint ? "Gemini is painting, about a minute…" : "Paint this layout"}</button></div>
@@ -675,6 +681,7 @@ document.addEventListener("click", e => {
   if (act === "applyread" && proposal) { Object.assign(r, { w: proposal.w, d: proposal.d, h: proposal.h, openings: proposal.openings }); proposal = null; S.example = false; rebuild(); }
   if (act === "dismissread") proposal = null;
   if (act === "clearuploads") { const m = M(); m.photos = []; m.underlay = null; paintBase = ""; api("clear", { room: r.id }).catch(() => {}); }
+  if (act === "savekey") return run("paint", async () => { await api("key", { key: $("#gkey").value }); hasKey = true; });
   if (act === "paint") { const m = M(), photo = m.photos.some(p => p.name === paintBase) ? paintBase : "";
     return run("paint", async () => { const res = await job("render", { room: r.id, plan: await planPng(), brief: paintBrief(), photo }); m.renders.push({ name: res.name, url: fileUrl(r.id, res.name) }); }); }
   if (act === "find") { const { list } = shopRows(), p = PAL[S.shared.palette];
@@ -750,7 +757,7 @@ plan.addEventListener("pointerup", endDrag); plan.addEventListener("pointercance
 async function boot() {
   const seed = window.ROOMFIT_SEED;   // a prepared set of rooms; replaces older saved work once
   if (seed && S.seed !== seed.seed) S = JSON.parse(JSON.stringify(seed));
-  try { const { state } = await api("state"); API = true; if (state && state.rooms && state.rooms.length) S = state; } catch (e) {}
+  try { const { state, gemini } = await api("state"); API = true; hasKey = !!gemini; if (state && state.rooms && state.rooms.length) S = state; } catch (e) {}
   for (const r of S.rooms) r.id = r.id || uid();
   S.cur = clamp(S.cur | 0, 0, S.rooms.length - 1);
   if (API) try { await loadMedia(); } catch (e) {}
